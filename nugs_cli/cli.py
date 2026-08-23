@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import urllib.request
 from typing import Any
 
 from . import api
@@ -148,6 +153,22 @@ def cmd_livestreams(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_track_from_show(show_data: dict[str, Any], track_arg: str | None) -> dict[str, Any] | None:
+    tracks = show_data.get("tracks", [])
+    if not tracks:
+        return None
+    if not track_arg:
+        return tracks[0]
+    t_arg = track_arg.strip()
+    if t_arg.isdigit():
+        t_num = int(t_arg)
+        matched = next((t for t in tracks if t.get("track_id") == t_num), None)
+        if not matched:
+            matched = next((t for t in tracks if t.get("track_num") == t_num), None)
+        return matched
+    return next((t for t in tracks if t_arg.lower() in (t.get("title") or "").lower()), None)
+
+
 def cmd_clip_url(args: argparse.Namespace) -> int:
     try:
         data = api.get_show(args.target)
@@ -155,24 +176,7 @@ def cmd_clip_url(args: argparse.Namespace) -> int:
         print(f"Error fetching show: {e}", file=sys.stderr)
         return 1
 
-    tracks = data.get("tracks", [])
-    if not tracks:
-        print("No tracks found in show", file=sys.stderr)
-        return 1
-
-    selected_track = None
-    if args.track:
-        t_arg = args.track.strip()
-        if t_arg.isdigit():
-            t_num = int(t_arg)
-            selected_track = next((t for t in tracks if t.get("track_id") == t_num), None)
-            if not selected_track:
-                selected_track = next((t for t in tracks if t.get("track_num") == t_num), None)
-        else:
-            selected_track = next((t for t in tracks if t_arg.lower() in (t.get("title") or "").lower()), None)
-    else:
-        selected_track = tracks[0]
-
+    selected_track = _resolve_track_from_show(data, args.track)
     if not selected_track or not selected_track.get("clip_url"):
         print(f"No clip URL available for track {args.track or 1}", file=sys.stderr)
         return 1
@@ -182,6 +186,57 @@ def cmd_clip_url(args: argparse.Namespace) -> int:
     else:
         print(selected_track["clip_url"])
     return 0
+
+
+def cmd_play_clip(args: argparse.Namespace) -> int:
+    try:
+        data = api.get_show(args.target)
+    except Exception as e:
+        print(f"Error fetching show: {e}", file=sys.stderr)
+        return 1
+
+    selected_track = _resolve_track_from_show(data, args.track)
+    if not selected_track or not selected_track.get("clip_url"):
+        print(f"No preview clip found for track {args.track or 1}", file=sys.stderr)
+        return 1
+
+    clip_url = selected_track["clip_url"]
+    print(f"Playing preview: {data['artist_name']} — {selected_track['title']} ({data['title']})")
+    print(f"Clip URL: {clip_url}\n")
+
+    if shutil.which("afplay"):
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
+            temp_path = tf.name
+        try:
+            urllib.request.urlretrieve(clip_url, temp_path)
+            cmd = ["afplay"]
+            if args.seconds:
+                cmd.extend(["-t", str(args.seconds)])
+            cmd.append(temp_path)
+            subprocess.run(cmd, check=True)
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        return 0
+    elif shutil.which("ffplay"):
+        cmd = ["ffplay", "-nodisp", "-autoexit"]
+        if args.seconds:
+            cmd.extend(["-t", str(args.seconds)])
+        cmd.append(clip_url)
+        subprocess.run(cmd, check=True)
+        return 0
+    elif shutil.which("mpv"):
+        cmd = ["mpv", "--no-video"]
+        if args.seconds:
+            cmd.append(f"--length={args.seconds}")
+        cmd.append(clip_url)
+        subprocess.run(cmd, check=True)
+        return 0
+    else:
+        print(f"No local audio player found (afplay, ffplay, mpv). Clip URL: {clip_url}")
+        return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -243,6 +298,14 @@ def main(argv: list[str] | None = None) -> int:
     p_clip.add_argument("track", nargs="?", help="Track number, ID, or title")
     p_clip.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_clip.set_defaults(func=cmd_clip_url)
+
+    # play-clip
+    p_play = subparsers.add_parser("play-clip", help="Play audio preview clip for a track")
+    p_play.add_argument("target", help="Show ID or URL")
+    p_play.add_argument("track", nargs="?", help="Track number, ID, or title")
+    p_play.add_argument("--seconds", type=int, default=10, help="Playback duration in seconds (default: 10)")
+    p_play.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
+    p_play.set_defaults(func=cmd_play_clip)
 
     args = parser.parse_args(argv)
     if has_json_flag:
