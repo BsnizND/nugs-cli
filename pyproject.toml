@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nugs-cli"
+version = "1.0.0"
+description = "Fast, reverse-engineered CLI and Python client for the nugs.net live music catalog, setlists, and webcasts."
+readme = "README.md"
+authors = [{ name = "Brian Snyder" }]
+license = { text = "MIT" }
+keywords = ["nugs", "nugs.net", "live-music", "concerts", "setlists", "jam-bands", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Environment :: Console",
+]
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+nugs = "nugs_cli.cli:main"
+nugs-cli = "nugs_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nugs_cli*"]
