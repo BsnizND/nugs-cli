@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from nugs_cli import api
@@ -120,6 +121,101 @@ class TestNugsAPI(unittest.TestCase):
         self.assertEqual(show["track_count"], 1)
         self.assertEqual(show["tracks"][0]["title"], "Jimi Thing")
         self.assertEqual(show["tracks"][0]["clip_url"], "https://assets.nugs.net/clips2/dmb260725d1_01_Jimi_Thing_c.mp3")
+
+    @patch("nugs_cli.api._http_get")
+    def test_featured_releases_are_normalized_and_limited(self, mock_get):
+        mock_get.return_value = {
+            "items": [
+                {
+                    "id": "10",
+                    "title": "First Show",
+                    "performanceDate": "2026-08-24T00:00:00",
+                    "artist": {"id": "1205", "name": "Goose"},
+                    "venue": {"name": "The Venue", "city": "Bend", "state": "OR"},
+                },
+                {
+                    "id": "11",
+                    "title": "Second Show",
+                    "artist": {"id": "803", "name": "Dave Matthews Band"},
+                },
+            ]
+        }
+
+        result = api.get_featured_releases(limit=1)
+
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["artist_name"], "Goose")
+        self.assertEqual(result["items"][0]["venue"], "The Venue (Bend, OR)")
+
+    @patch("nugs_cli.api._http_get")
+    def test_popular_releases_normalize_nested_show_details(self, mock_get):
+        mock_get.return_value = {
+            "items": [
+                {
+                    "id": "46884",
+                    "availabilityType": "available",
+                    "releaseType": "show",
+                    "artist": {"id": "1205", "name": "Goose"},
+                    "showDetails": {
+                        "performanceDate": "2026-08-13T07:00:00Z",
+                        "venue": {
+                            "title": "Cal Coast Credit Union Open Air Theatre, San Diego, CA",
+                            "name": "Cal Coast Credit Union Open Air Theatre",
+                            "city": "San Diego",
+                            "state": "CA",
+                        },
+                    },
+                }
+            ],
+            "total": 100,
+        }
+
+        result = api.get_popular_releases(limit=1)
+        item = result["items"][0]
+
+        self.assertEqual(item["artist_name"], "Goose")
+        self.assertEqual(item["performance_date"], "2026-08-13T07:00:00Z")
+        self.assertEqual(item["title"], "Cal Coast Credit Union Open Air Theatre, San Diego, CA")
+
+    @patch("nugs_cli.api._http_get")
+    def test_livestreams_exclude_expired_events_and_sort_upcoming(self, mock_get):
+        now = datetime.now(timezone.utc)
+        past = (now - timedelta(days=2)).isoformat()
+        future_later = (now + timedelta(days=2)).isoformat()
+        future_sooner = (now + timedelta(days=1)).isoformat()
+        mock_get.return_value = {
+            "items": [
+                {
+                    "skuId": 1,
+                    "startDate": past,
+                    "endDate": past,
+                    "release": {"id": "1", "title": "Expired", "artist": {"name": "Old Artist"}},
+                },
+                {
+                    "skuId": 2,
+                    "startDate": future_later,
+                    "endDate": future_later,
+                    "release": {"id": "2", "title": "Later", "artist": {"name": "Artist Two"}},
+                },
+                {
+                    "skuId": 3,
+                    "startDate": future_sooner,
+                    "endDate": future_sooner,
+                    "release": {"id": "3", "title": "Sooner", "artist": {"name": "Artist Three"}},
+                },
+            ]
+        }
+
+        result = api.get_livestreams(limit=10)
+
+        self.assertEqual(result["total"], 2)
+        self.assertEqual([item["title"] for item in result["items"]], ["Sooner", "Later"])
+        self.assertEqual(result["items"][0]["artist_name"], "Artist Three")
+        mock_get.assert_called_once_with(
+            f"{api.CATALOG_API_BASE}/livestreams",
+            params={"limit": 100, "offset": 0},
+        )
 
 
 if __name__ == "__main__":

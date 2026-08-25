@@ -1,4 +1,4 @@
-"""nugs-cli: Reverse-engineered CLI and SDK for nugs.net catalog, shows, setlists, and livestreams."""
+"""nugs-cli: unofficial CLI and SDK for nugs.net catalog metadata and previews."""
 
 from .api import (
     NugsAPIError,

@@ -1,25 +1,25 @@
-# nugs-cli 🎸
+# nugs-cli
 
-Fast, lightweight, reverse-engineered CLI and Python client for [nugs.net](https://www.nugs.net) live music catalog, concert recordings, setlists, and webcasts.
+An unofficial, lightweight CLI and Python client for exploring the public [nugs.net](https://www.nugs.net) live-music catalog, concert metadata, setlists, preview clips, and webcasts.
 
-Zero headless browser dependencies, zero scraping, zero heavy dependencies. Pure Python 3 standard library with sub-100ms response times.
+It uses Python's standard library only: no browser automation and no runtime package dependencies.
 
 ---
 
 ## Features
 
-- **640+ Artists Directory:** Search and resolve artist IDs and catalog counts (Dave Matthews Band, Phish, Dead & Company, Goose, Billy Strings, Pearl Jam, Bruce Springsteen, Metallica, etc.).
+- **Artist Directory:** Search and resolve artist IDs and catalog counts (Dave Matthews Band, Phish, Dead & Company, Goose, Billy Strings, Pearl Jam, Bruce Springsteen, Metallica, etc.).
 - **Concert & Show Catalogs:** List recent and historical shows by artist with venue, date, city, state, and container ID.
-- **Complete Setlist & Track Inspection:** Instant setlist breakdown, track numbers, track IDs, set separations, and durations.
-- **30-Second Preview Clips:** Direct URL extraction for audio preview clips (`.mp3`) for every track.
+- **Setlist & Track Inspection:** Show set breakdown, track numbers, track IDs, and available durations.
+- **Preview Clips:** Resolve and play the public audio preview when nugs provides one for a track.
 - **Webcasts & Livestreams:** Active, upcoming, and exclusive livestream schedule discovery.
-- **Dual Mode:** Beautifully formatted console tables for humans, clean structured `--json` for automation and LLM agents.
+- **Text or JSON:** Readable console tables for humans and structured `--json` output for automation.
 
 ---
 
-## Reverse-Engineered API Reference
+## Endpoint Reference
 
-The nugs.net web player (`play.nugs.net`) uses modern REST/JSON microservices behind the scenes. No authentication is needed for catalog discovery and metadata:
+The client uses undocumented JSON endpoints also used by nugs.net's public catalog experience. No account credentials are read or stored. Because these are not a supported public developer API, their response formats can change without notice.
 
 | Endpoint | Method | Purpose |
 | :--- | :--- | :--- |
@@ -29,7 +29,6 @@ The nugs.net web player (`play.nugs.net`) uses modern REST/JSON microservices be
 | `https://catalog.nugs.net/api/v1/releases/featured` | `GET` | Currently featured releases |
 | `https://catalog.nugs.net/api/v1/releases/popular` | `GET` | Most popular releases |
 | `https://catalog.nugs.net/api/v1/livestreams` | `GET` | Upcoming and active live webcasts |
-| `https://playback.nugs.net/v1/tracks/{trackId}/url` | `GET` | Full track stream resolution (Requires Bearer Auth) |
 
 ---
 
@@ -37,12 +36,12 @@ The nugs.net web player (`play.nugs.net`) uses modern REST/JSON microservices be
 
 ### With pip
 ```bash
-pip install git+https://github.com/BsnizND/nugs-cli.git
+pip install git+https://github.com/BsnizND/nugs-cli.git@v1.0.0
 ```
 
 ### With pipx (Recommended for standalone CLI)
 ```bash
-pipx install git+https://github.com/BsnizND/nugs-cli.git
+pipx install git+https://github.com/BsnizND/nugs-cli.git@v1.0.0
 ```
 
 ### From Source
@@ -83,13 +82,13 @@ nugs shows 803 --limit 5
 
 Output:
 ```
-Shows for: Goose (ID: 1205) — Total: 491
+Shows for: Goose (ID: 1205) — Total: 493
 
-Show ID  Date        Venue                                                    Title                                                          
--------  ----------  -------------------------------------------------------  ---------------------------------------------------------------
-46889    2026-08-19  WaMu Theater (Seattle, WA)                               8-19-2026 WaMu Theater Seattle, WA                             
-46887    2026-08-16  Grand Theatre at Grand Sierra Resort (Reno, NV)          8-16-2026 Grand Theatre at Grand Sierra Resort Reno, NV        
-46884    2026-08-13  Cal Coast Credit Union Open Air Theatre (San Diego, CA)  8-13-2026 Cal Coast Credit Union Open Air Theatre San Diego, CA
+Show ID  Date        Venue                                 Title
+-------  ----------  ------------------------------------  --------------------------------------------
+46891    2026-08-22  Hayden Homes Amphitheater (Bend, OR)  8-22-2026 Hayden Homes Amphitheater Bend, OR
+46890    2026-08-21  Hayden Homes Amphitheater (Bend, OR)  8-21-2026 Hayden Homes Amphitheater Bend, OR
+46889    2026-08-19  WaMu Theater (Seattle, WA)            8-19-2026 WaMu Theater Seattle, WA
 ```
 
 ### Inspect Show & Setlist
@@ -127,10 +126,24 @@ Available formats: MP3, ALAC, ALAC-HD
 
 ### Get Audio Preview Clip URL
 ```bash
-# Get 30s preview clip for song by title or track number
+# Get a preview clip for a song by title or track number
 nugs clip-url 48955 "Jimi Thing"
 # Output: https://assets.nugs.net/clips2/dmb260725d1_01_Jimi_Thing_c.mp3
 ```
+
+Title matching prefers an exact song title. If a partial title matches multiple tracks, the command asks you to use a track number instead of silently choosing the wrong song.
+
+### Play an Audio Preview
+
+```bash
+# Plays 10 seconds by default
+nugs play-clip 48955 "Jimi Thing"
+
+# Choose the duration
+nugs play-clip 48955 1 --seconds 5
+```
+
+Playback uses `afplay` on macOS, or `ffplay`/`mpv` when installed. The command exits unsuccessfully if no supported player is available or playback fails.
 
 ### Featured & Popular Shows
 ```bash
@@ -148,7 +161,10 @@ Pass `--json` to any command for structured JSON output:
 ```bash
 nugs show 48955 --json
 nugs shows "Phish" --json
+nugs play-clip 48955 1 --seconds 1 --json
 ```
+
+Errors also use JSON when `--json` is present and always return a nonzero exit status.
 
 ---
 
@@ -178,10 +194,28 @@ for track in show["tracks"]:
 streams = nugs_cli.get_livestreams()
 ```
 
+## Development
+
+The test suite has no third-party runner requirement:
+
+```bash
+python -m unittest discover -v
+```
+
+To verify the distributable package:
+
+```bash
+python -m pip wheel --no-deps .
+```
+
+## Responsible Use
+
+This client is unofficial and relies on undocumented endpoints. Use it only in ways permitted by the [nugs.net Terms of Use](https://www.nugs.net/terms.html) that apply to you and by applicable law. It does not bypass authentication, subscription access, or digital-rights controls, and it intentionally does not resolve full subscriber streams.
+
 ---
 
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-*Disclaimer: This project is an independent open-source reverse-engineering tool and is not affiliated with, sponsored by, or endorsed by nugs.net or Live Nation.*
+*Disclaimer: This independent open-source project is not affiliated with, sponsored by, or endorsed by nugs.net or Live Nation. “nugs.net” is used only to identify the service this client works with.*

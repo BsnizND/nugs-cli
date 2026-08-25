@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nugs-cli"
 version = "1.0.0"
-description = "Fast, reverse-engineered CLI and Python client for the nugs.net live music catalog, setlists, and webcasts."
+description = "Unofficial CLI and Python client for nugs.net catalog metadata, setlists, previews, and webcasts."
 readme = "README.md"
 authors = [{ name = "Brian Snyder" }]
 license = { text = "MIT" }
@@ -17,6 +17,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Sound/Audio",
@@ -24,6 +26,11 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/BsnizND/nugs-cli"
+Repository = "https://github.com/BsnizND/nugs-cli.git"
+Issues = "https://github.com/BsnizND/nugs-cli/issues"
 
 [project.optional-dependencies]
 dev = [

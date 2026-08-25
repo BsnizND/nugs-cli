@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for nugs.net reverse-engineered API."""
+"""CLI for the unofficial nugs.net catalog client."""
 
 from __future__ import annotations
 
@@ -10,10 +10,31 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from typing import Any
 
 from . import api
+
+MAX_CLIP_BYTES = 25 * 1024 * 1024
+
+
+class CLIError(RuntimeError):
+    """Expected command-line failure that should not produce a traceback."""
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
 
 
 def format_table(headers: list[str], rows: list[list[str]]) -> str:
@@ -36,31 +57,24 @@ def format_table(headers: list[str], rows: list[list[str]]) -> str:
 
 def cmd_artists(args: argparse.Namespace) -> int:
     artists = api.get_artists(query=args.query)
+    selected = artists if args.limit == 0 else artists[:args.limit]
     if args.json:
-        print(json.dumps(artists, indent=2))
+        print(json.dumps(selected, indent=2))
         return 0
 
     if not artists:
         print(f"No artists found matching {args.query!r}")
         return 0
 
-    limit = args.limit if args.limit and args.limit > 0 else (20 if not args.query else len(artists))
-    rows = [[str(a["id"]), a["name"], str(a["num_shows"]), str(a["num_albums"])] for a in artists[:limit]]
+    rows = [[str(a["id"]), a["name"], str(a["num_shows"]), str(a["num_albums"])] for a in selected]
     print(format_table(["Artist ID", "Artist Name", "Shows", "Albums"], rows))
-    if len(artists) > limit:
-        print(f"\n... and {len(artists) - limit} more (use --limit 0 to show all)")
+    if len(artists) > len(selected):
+        print(f"\n... and {len(artists) - len(selected)} more (use --limit 0 to show all)")
     return 0
 
 
 def cmd_shows(args: argparse.Namespace) -> int:
-    try:
-        data = api.get_shows_by_artist(args.artist, limit=args.limit, offset=args.offset)
-    except Exception as e:
-        if args.json:
-            print(json.dumps({"error": str(e)}, indent=2))
-        else:
-            print(f"Error: {e}", file=sys.stderr)
-        return 1
+    data = api.get_shows_by_artist(args.artist, limit=args.limit, offset=args.offset)
 
     if args.json:
         print(json.dumps(data, indent=2))
@@ -79,14 +93,7 @@ def cmd_shows(args: argparse.Namespace) -> int:
 
 
 def cmd_show(args: argparse.Namespace) -> int:
-    try:
-        data = api.get_show(args.target)
-    except Exception as e:
-        if args.json:
-            print(json.dumps({"error": str(e)}, indent=2))
-        else:
-            print(f"Error: {e}", file=sys.stderr)
-        return 1
+    data = api.get_show(args.target)
 
     if args.json:
         print(json.dumps(data, indent=2))
@@ -119,7 +126,12 @@ def cmd_featured(args: argparse.Namespace) -> int:
 
     rows = []
     for item in data.get("items", []):
-        rows.append([str(item.get("id")), item.get("artistName", ""), (item.get("performanceDate") or "")[:10], item.get("title", "")])
+        rows.append([
+            str(item.get("id", "")),
+            item.get("artist_name") or "",
+            (item.get("performance_date") or "")[:10],
+            item.get("title") or "",
+        ])
     print(format_table(["Show ID", "Artist", "Date", "Title"], rows))
     return 0
 
@@ -132,7 +144,12 @@ def cmd_popular(args: argparse.Namespace) -> int:
 
     rows = []
     for item in data.get("items", []):
-        rows.append([str(item.get("id")), item.get("artistName", ""), (item.get("performanceDate") or "")[:10], item.get("title", "")])
+        rows.append([
+            str(item.get("id", "")),
+            item.get("artist_name") or "",
+            (item.get("performance_date") or "")[:10],
+            item.get("title") or "",
+        ])
     print(format_table(["Show ID", "Artist", "Date", "Title"], rows))
     return 0
 
@@ -145,10 +162,13 @@ def cmd_livestreams(args: argparse.Namespace) -> int:
 
     rows = []
     for item in data.get("items", []):
-        artist = item.get("artist", {}).get("name", "") if isinstance(item.get("artist"), dict) else ""
-        date = item.get("startDate", "")
-        title = item.get("title") or item.get("headline") or ""
-        rows.append([str(item.get("skuId", "")), artist, date[:16] if date else "", title])
+        date = item.get("start_date") or ""
+        rows.append([
+            str(item.get("sku_id", "")),
+            item.get("artist_name") or "",
+            date[:16],
+            item.get("title") or "",
+        ])
     print(format_table(["SKU ID", "Artist", "Start Date", "Title"], rows))
     return 0
 
@@ -166,20 +186,25 @@ def _resolve_track_from_show(show_data: dict[str, Any], track_arg: str | None) -
         if not matched:
             matched = next((t for t in tracks if t.get("track_num") == t_num), None)
         return matched
-    return next((t for t in tracks if t_arg.lower() in (t.get("title") or "").lower()), None)
+
+    normalized = t_arg.casefold()
+    exact = [t for t in tracks if (t.get("title") or "").strip().casefold() == normalized]
+    if exact:
+        return exact[0]
+
+    partial = [t for t in tracks if normalized in (t.get("title") or "").strip().casefold()]
+    if len(partial) > 1:
+        choices = ", ".join(f"{t.get('track_num')}: {(t.get('title') or '').strip()}" for t in partial)
+        raise CLIError(f"Track title {track_arg!r} is ambiguous; choose a track number or one of: {choices}")
+    return partial[0] if partial else None
 
 
 def cmd_clip_url(args: argparse.Namespace) -> int:
-    try:
-        data = api.get_show(args.target)
-    except Exception as e:
-        print(f"Error fetching show: {e}", file=sys.stderr)
-        return 1
+    data = api.get_show(args.target)
 
     selected_track = _resolve_track_from_show(data, args.track)
     if not selected_track or not selected_track.get("clip_url"):
-        print(f"No clip URL available for track {args.track or 1}", file=sys.stderr)
-        return 1
+        raise CLIError(f"No clip URL available for track {args.track or 1}")
 
     if args.json:
         print(json.dumps(selected_track, indent=2))
@@ -189,54 +214,65 @@ def cmd_clip_url(args: argparse.Namespace) -> int:
 
 
 def cmd_play_clip(args: argparse.Namespace) -> int:
-    try:
-        data = api.get_show(args.target)
-    except Exception as e:
-        print(f"Error fetching show: {e}", file=sys.stderr)
-        return 1
+    data = api.get_show(args.target)
 
     selected_track = _resolve_track_from_show(data, args.track)
     if not selected_track or not selected_track.get("clip_url"):
-        print(f"No preview clip found for track {args.track or 1}", file=sys.stderr)
-        return 1
+        raise CLIError(f"No preview clip found for track {args.track or 1}")
 
     clip_url = selected_track["clip_url"]
-    print(f"Playing preview: {data['artist_name']} — {selected_track['title']} ({data['title']})")
-    print(f"Clip URL: {clip_url}\n")
+    parsed_url = urllib.parse.urlparse(clip_url)
+    if parsed_url.scheme != "https":
+        raise CLIError(f"Refusing non-HTTPS clip URL: {clip_url}")
 
     if shutil.which("afplay"):
+        player = "afplay"
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
             temp_path = tf.name
         try:
-            urllib.request.urlretrieve(clip_url, temp_path)
-            cmd = ["afplay"]
-            if args.seconds:
-                cmd.extend(["-t", str(args.seconds)])
+            request = urllib.request.Request(clip_url, headers={"User-Agent": api.USER_AGENT})
+            with urllib.request.urlopen(request, timeout=15) as response, open(temp_path, "wb") as output:
+                content = response.read(MAX_CLIP_BYTES + 1)
+                if len(content) > MAX_CLIP_BYTES:
+                    raise CLIError("Preview clip exceeds the 25 MB safety limit")
+                output.write(content)
+            cmd = [player, "-t", str(args.seconds)]
             cmd.append(temp_path)
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, timeout=args.seconds + 15)
         finally:
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
-        return 0
     elif shutil.which("ffplay"):
-        cmd = ["ffplay", "-nodisp", "-autoexit"]
-        if args.seconds:
-            cmd.extend(["-t", str(args.seconds)])
+        player = "ffplay"
+        cmd = [player, "-nodisp", "-autoexit", "-t", str(args.seconds)]
         cmd.append(clip_url)
-        subprocess.run(cmd, check=True)
-        return 0
+        subprocess.run(cmd, check=True, timeout=args.seconds + 15)
     elif shutil.which("mpv"):
-        cmd = ["mpv", "--no-video"]
-        if args.seconds:
-            cmd.append(f"--length={args.seconds}")
+        player = "mpv"
+        cmd = [player, "--no-video", f"--length={args.seconds}"]
         cmd.append(clip_url)
-        subprocess.run(cmd, check=True)
-        return 0
+        subprocess.run(cmd, check=True, timeout=args.seconds + 15)
     else:
-        print(f"No local audio player found (afplay, ffplay, mpv). Clip URL: {clip_url}")
-        return 0
+        raise CLIError("No local audio player found (supported: afplay, ffplay, mpv)")
+
+    result = {
+        "status": "played",
+        "player": player,
+        "seconds": args.seconds,
+        "show_id": data.get("show_id"),
+        "artist_name": data.get("artist_name"),
+        "show_title": data.get("title"),
+        "track": selected_track,
+    }
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Played preview: {data['artist_name']} — {selected_track['title']} ({data['title']})")
+        print(f"Player: {player} | Duration: {args.seconds}s")
+        print(f"Clip URL: {clip_url}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -245,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="nugs",
-        description="nugs.net reverse-engineered CLI for catalog, shows, setlists, and livestreams.",
+        description="Unofficial nugs.net CLI for catalog, shows, setlists, previews, and livestreams.",
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -253,15 +289,15 @@ def main(argv: list[str] | None = None) -> int:
     # artists
     p_artists = subparsers.add_parser("artists", help="Search or list artists")
     p_artists.add_argument("query", nargs="?", help="Artist name search query")
-    p_artists.add_argument("--limit", type=int, default=20, help="Maximum artists to return (default: 20)")
+    p_artists.add_argument("--limit", type=_nonnegative_int, default=20, help="Maximum artists to return; 0 shows all (default: 20)")
     p_artists.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_artists.set_defaults(func=cmd_artists)
 
     # shows
     p_shows = subparsers.add_parser("shows", help="List shows for an artist")
     p_shows.add_argument("artist", help="Artist name or ID")
-    p_shows.add_argument("--limit", type=int, default=20, help="Limit (default: 20)")
-    p_shows.add_argument("--offset", type=int, default=0, help="Offset (default: 0)")
+    p_shows.add_argument("--limit", type=_positive_int, default=20, help="Limit (default: 20)")
+    p_shows.add_argument("--offset", type=_nonnegative_int, default=0, help="Offset (default: 0)")
     p_shows.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_shows.set_defaults(func=cmd_shows)
 
@@ -273,22 +309,22 @@ def main(argv: list[str] | None = None) -> int:
 
     # featured
     p_featured = subparsers.add_parser("featured", help="Get featured releases")
-    p_featured.add_argument("--limit", type=int, default=20, help="Limit (default: 20)")
-    p_featured.add_argument("--offset", type=int, default=0, help="Offset (default: 0)")
+    p_featured.add_argument("--limit", type=_positive_int, default=20, help="Limit (default: 20)")
+    p_featured.add_argument("--offset", type=_nonnegative_int, default=0, help="Offset (default: 0)")
     p_featured.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_featured.set_defaults(func=cmd_featured)
 
     # popular
     p_popular = subparsers.add_parser("popular", help="Get popular releases")
-    p_popular.add_argument("--limit", type=int, default=20, help="Limit (default: 20)")
-    p_popular.add_argument("--offset", type=int, default=0, help="Offset (default: 0)")
+    p_popular.add_argument("--limit", type=_positive_int, default=20, help="Limit (default: 20)")
+    p_popular.add_argument("--offset", type=_nonnegative_int, default=0, help="Offset (default: 0)")
     p_popular.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_popular.set_defaults(func=cmd_popular)
 
     # livestreams
     p_livestreams = subparsers.add_parser("livestreams", help="Get active and upcoming livestreams")
-    p_livestreams.add_argument("--limit", type=int, default=20, help="Limit (default: 20)")
-    p_livestreams.add_argument("--offset", type=int, default=0, help="Offset (default: 0)")
+    p_livestreams.add_argument("--limit", type=_positive_int, default=20, help="Limit (default: 20)")
+    p_livestreams.add_argument("--offset", type=_nonnegative_int, default=0, help="Offset (default: 0)")
     p_livestreams.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_livestreams.set_defaults(func=cmd_livestreams)
 
@@ -303,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     p_play = subparsers.add_parser("play-clip", help="Play audio preview clip for a track")
     p_play.add_argument("target", help="Show ID or URL")
     p_play.add_argument("track", nargs="?", help="Track number, ID, or title")
-    p_play.add_argument("--seconds", type=int, default=10, help="Playback duration in seconds (default: 10)")
+    p_play.add_argument("--seconds", type=_positive_int, default=10, help="Playback duration in seconds (default: 10)")
     p_play.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_play.set_defaults(func=cmd_play_clip)
 
@@ -315,7 +351,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (api.NugsAPIError, CLIError, ValueError, OSError, subprocess.SubprocessError) as error:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": str(error)}, indent=2))
+        else:
+            print(f"Error: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

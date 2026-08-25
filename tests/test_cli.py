@@ -4,7 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from nugs_cli import cli
+from nugs_cli import api, cli
 
 
 class TestNugsCLI(unittest.TestCase):
@@ -20,6 +20,27 @@ class TestNugsCLI(unittest.TestCase):
         out = json.loads(buf.getvalue())
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["id"], 803)
+
+    @patch("nugs_cli.api.get_artists")
+    def test_cli_artists_json_honors_limit(self, mock_get_artists):
+        mock_get_artists.return_value = [
+            {"id": index, "name": f"Artist {index}", "num_shows": 1, "num_albums": 0}
+            for index in range(3)
+        ]
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["artists", "--limit", "1", "--json"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(buf.getvalue())), 1)
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["artists", "--limit", "0", "--json"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(json.loads(buf.getvalue())), 3)
 
     @patch("nugs_cli.api.get_show")
     def test_cli_show_text(self, mock_get_show):
@@ -60,6 +81,86 @@ class TestNugsCLI(unittest.TestCase):
             code = cli.main(["clip-url", "48955", "Word Up!"])
         self.assertEqual(code, 0)
         self.assertEqual(buf.getvalue().strip(), "https://example.com/clip2.mp3")
+
+    def test_track_resolution_prefers_exact_title(self):
+        show = {
+            "tracks": [
+                {"track_num": 5, "title": "The Empress of Organos"},
+                {"track_num": 8, "title": "Empress of Organos"},
+            ]
+        }
+
+        selected = cli._resolve_track_from_show(show, "Empress of Organos")
+
+        self.assertEqual(selected["track_num"], 8)
+
+    def test_track_resolution_rejects_ambiguous_partial_title(self):
+        show = {
+            "tracks": [
+                {"track_num": 5, "title": "The Empress of Organos"},
+                {"track_num": 8, "title": "Empress of Organos"},
+            ]
+        }
+
+        with self.assertRaisesRegex(cli.CLIError, "ambiguous"):
+            cli._resolve_track_from_show(show, "Empress")
+
+    @patch("nugs_cli.cli.subprocess.run")
+    @patch("nugs_cli.cli.urllib.request.urlopen")
+    @patch("nugs_cli.cli.shutil.which", return_value="/usr/bin/afplay")
+    @patch("nugs_cli.api.get_show")
+    def test_play_clip_json_reports_success(self, mock_get_show, _mock_which, mock_urlopen, mock_run):
+        mock_get_show.return_value = {
+            "show_id": 46891,
+            "artist_name": "Goose",
+            "title": "08/22/26 Hayden Homes Amphitheater",
+            "tracks": [
+                {
+                    "track_id": 788423,
+                    "track_num": 1,
+                    "title": "Drive",
+                    "clip_url": "https://example.com/drive.mp3",
+                }
+            ],
+        }
+        mock_urlopen.return_value = io.BytesIO(b"preview")
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["play-clip", "46891", "1", "--seconds", "1", "--json"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "played")
+        mock_run.assert_called_once()
+
+    @patch("nugs_cli.cli.shutil.which", return_value=None)
+    @patch("nugs_cli.api.get_show")
+    def test_play_clip_without_player_returns_json_error(self, mock_get_show, _mock_which):
+        mock_get_show.return_value = {
+            "show_id": 1,
+            "artist_name": "Artist",
+            "title": "Show",
+            "tracks": [
+                {"track_id": 11, "track_num": 1, "title": "Song", "clip_url": "https://example.com/song.mp3"}
+            ],
+        }
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["play-clip", "1", "--json"])
+
+        self.assertEqual(code, 1)
+        self.assertIn("No local audio player", json.loads(buf.getvalue())["error"])
+
+    @patch("nugs_cli.api.get_artists", side_effect=api.NugsAPIError("network unavailable"))
+    def test_api_failure_returns_json_error_without_traceback(self, _mock_get_artists):
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["artists", "Goose", "--json"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(buf.getvalue()), {"error": "network unavailable"})
 
 
 if __name__ == "__main__":

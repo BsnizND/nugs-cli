@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reverse-engineered API client for nugs.net catalog, artists, shows, and livestreams."""
+"""Unofficial API client for nugs.net catalog, artists, shows, and livestreams."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Any
 
 CATALOG_API_BASE = "https://catalog.nugs.net/api/v1"
@@ -23,6 +24,77 @@ class NugsAPIError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+
+
+def _validate_pagination(limit: int, offset: int) -> None:
+    if limit < 0:
+        raise ValueError("limit must be 0 or greater")
+    if offset < 0:
+        raise ValueError("offset must be 0 or greater")
+
+
+def _as_int(value: Any) -> Any:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _image_url(item: dict[str, Any]) -> str | None:
+    image = item.get("image") or item.get("coverImage")
+    if isinstance(image, dict):
+        image = image.get("url")
+    if isinstance(image, str) and image.startswith("/"):
+        return f"https://catalog.nugs.net{image}"
+    return image if isinstance(image, str) else None
+
+
+def _venue_text(venue: Any) -> str | None:
+    if isinstance(venue, str):
+        return venue
+    if not isinstance(venue, dict):
+        return None
+    name = venue.get("name") or venue.get("title")
+    location = ", ".join(filter(None, [venue.get("city"), venue.get("state")]))
+    return f"{name} ({location})" if name and location else (name or location or None)
+
+
+def _normalize_release(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the different featured/popular release payloads."""
+    artist = item.get("artist") if isinstance(item.get("artist"), dict) else {}
+    show_details = item.get("showDetails") if isinstance(item.get("showDetails"), dict) else {}
+    venue = item.get("venue") or show_details.get("venue")
+    album_details = item.get("albumDetails") if isinstance(item.get("albumDetails"), dict) else {}
+    title = (
+        item.get("title")
+        or item.get("headline")
+        or album_details.get("title")
+        or (venue.get("title") if isinstance(venue, dict) else venue)
+    )
+    return {
+        "id": _as_int(item.get("id")),
+        "title": title,
+        "artist_id": _as_int(artist.get("id")) if artist else None,
+        "artist_name": artist.get("name") or item.get("artistName"),
+        "performance_date": item.get("performanceDate") or show_details.get("performanceDate"),
+        "venue": _venue_text(venue),
+        "status": item.get("status") or item.get("availabilityType"),
+        "type": item.get("type") or item.get("releaseType"),
+        "has_video": item.get("hasVideoOnDemand", item.get("hasVideoContent", False)),
+        "audio_formats": item.get("audioFormatTypes", []),
+        "video_formats": item.get("videoFormatTypes", []),
+        "image_url": _image_url(item),
+    }
+
+
+def _parse_api_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _http_get(url: str, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> Any:
@@ -45,11 +117,13 @@ def _http_get(url: str, params: dict[str, Any] | None = None, headers: dict[str,
                 return {}
             try:
                 return json.loads(content)
-            except json.JSONDecodeError:
-                return content
+            except json.JSONDecodeError as error:
+                raise NugsAPIError(f"Invalid JSON response from {url}", response_body=content[:500]) from error
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else None
         raise NugsAPIError(f"HTTP {e.code} for {url}: {e.reason}", status_code=e.code, response_body=body) from e
+    except NugsAPIError:
+        raise
     except Exception as e:
         raise NugsAPIError(f"Network error requesting {url}: {e}") from e
 
@@ -118,6 +192,7 @@ def resolve_artist(artist_query_or_id: str | int) -> dict[str, Any]:
 
 def get_shows_by_artist(artist_query_or_id: str | int, limit: int = 20, offset: int = 0) -> dict[str, Any]:
     """Get paginated shows/releases for a given artist."""
+    _validate_pagination(limit, offset)
     artist = resolve_artist(artist_query_or_id)
     artist_id = artist["id"]
 
@@ -129,16 +204,7 @@ def get_shows_by_artist(artist_query_or_id: str | int, limit: int = 20, offset: 
 
     items = []
     for item in data.get("items", []):
-        venue_raw = item.get("venue")
-        venue_str = None
-        if isinstance(venue_raw, dict):
-            v_name = venue_raw.get("name") or venue_raw.get("title")
-            v_loc = ", ".join(filter(None, [venue_raw.get("city"), venue_raw.get("state")]))
-            venue_str = f"{v_name} ({v_loc})" if v_name and v_loc else (v_name or v_loc)
-        elif isinstance(venue_raw, str):
-            venue_str = venue_raw
-        else:
-            venue_str = item.get("location")
+        venue_str = _venue_text(item.get("venue")) or item.get("location")
 
         items.append({
             "id": int(item["id"]),
@@ -153,6 +219,8 @@ def get_shows_by_artist(artist_query_or_id: str | int, limit: int = 20, offset: 
             "formats": item.get("audioFormatTypes", []),
             "image_url": item.get("image", {}).get("url") if isinstance(item.get("image"), dict) else None,
         })
+
+    items.sort(key=lambda item: item.get("performance_date") or "", reverse=True)
 
     return {
         "artist": artist,
@@ -221,11 +289,13 @@ def get_show(show_target: str | int) -> dict[str, Any]:
 
 def get_featured_releases(limit: int = 20, offset: int = 0) -> dict[str, Any]:
     """Fetch featured releases."""
-    data = _http_get(f"{CATALOG_API_BASE}/releases/featured", params={"limit": limit, "offset": offset})
-    items = data.get("items", [])
+    _validate_pagination(limit, offset)
+    data = _http_get(f"{CATALOG_API_BASE}/releases/featured")
+    all_items = [_normalize_release(item) for item in data.get("items", [])]
+    items = all_items[offset:offset + limit] if limit else []
     return {
         "items": items,
-        "total": data.get("total", len(items)),
+        "total": len(all_items),
         "limit": limit,
         "offset": offset,
     }
@@ -233,8 +303,9 @@ def get_featured_releases(limit: int = 20, offset: int = 0) -> dict[str, Any]:
 
 def get_popular_releases(limit: int = 20, offset: int = 0) -> dict[str, Any]:
     """Fetch popular releases."""
+    _validate_pagination(limit, offset)
     data = _http_get(f"{CATALOG_API_BASE}/releases/popular", params={"limit": limit, "offset": offset})
-    items = data.get("items", [])
+    items = [_normalize_release(item) for item in data.get("items", [])]
     return {
         "items": items,
         "total": data.get("total", len(items)),
@@ -244,12 +315,46 @@ def get_popular_releases(limit: int = 20, offset: int = 0) -> dict[str, Any]:
 
 
 def get_livestreams(limit: int = 20, offset: int = 0) -> dict[str, Any]:
-    """Fetch upcoming and recent livestreams / webcasts."""
-    data = _http_get(f"{CATALOG_API_BASE}/livestreams", params={"limit": limit, "offset": offset})
-    items = data.get("items", [])
+    """Fetch active and upcoming livestreams / webcasts."""
+    _validate_pagination(limit, offset)
+    raw_items = []
+    page_offset = 0
+    while True:
+        data = _http_get(f"{CATALOG_API_BASE}/livestreams", params={"limit": 100, "offset": page_offset})
+        page = data.get("items", [])
+        raw_items.extend(page)
+        total = data.get("total", len(raw_items))
+        if not page or len(raw_items) >= total:
+            break
+        page_offset += len(page)
+
+    now = datetime.now(timezone.utc)
+    upcoming = []
+    for item in raw_items:
+        start = _parse_api_datetime(item.get("startDate"))
+        end = _parse_api_datetime(item.get("endDate"))
+        if (end and end < now) or (not end and start and start < now):
+            continue
+        release_raw = item.get("release") if isinstance(item.get("release"), dict) else {}
+        release = _normalize_release(release_raw)
+        upcoming.append({
+            "sku_id": _as_int(item.get("skuId")),
+            "event_type": item.get("eventType"),
+            "content_type": item.get("contentType"),
+            "start_date": item.get("startDate"),
+            "end_date": item.get("endDate"),
+            "show_id": release.get("id"),
+            "artist_id": release.get("artist_id"),
+            "artist_name": release.get("artist_name"),
+            "title": release.get("title"),
+            "venue": release.get("venue"),
+            "image_url": release.get("image_url"),
+        })
+    upcoming.sort(key=lambda item: item.get("start_date") or "")
+    items = upcoming[offset:offset + limit] if limit else []
     return {
         "items": items,
-        "total": data.get("total", len(items)),
+        "total": len(upcoming),
         "limit": limit,
         "offset": offset,
     }
