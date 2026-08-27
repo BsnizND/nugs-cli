@@ -1,4 +1,4 @@
-"""nugs-cli: unofficial CLI and SDK for nugs.net catalog metadata and previews."""
+"""nugs-cli: unofficial nugs.net catalog and logged-in web-player client."""
 
 from .api import (
     NugsAPIError,
@@ -12,7 +12,7 @@ from .api import (
     resolve_artist,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "NugsAPIError",
     "extract_show_id",

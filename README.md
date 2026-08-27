@@ -1,8 +1,8 @@
 # nugs-cli
 
-An unofficial, lightweight CLI and Python client for exploring the public [nugs.net](https://www.nugs.net) live-music catalog, concert metadata, setlists, preview clips, and webcasts.
+An unofficial CLI and Python client for exploring the public [nugs.net](https://www.nugs.net) live-music catalog and controlling the official web player in your own logged-in Chrome session.
 
-It uses Python's standard library only: no browser automation and no runtime package dependencies.
+Catalog and preview commands use Python's standard library only. Full playback is an optional Playwright extra that operates rendered first-party player controls; it does not resolve or download subscriber streams.
 
 ---
 
@@ -13,6 +13,7 @@ It uses Python's standard library only: no browser automation and no runtime pac
 - **Setlist & Track Inspection:** Show set breakdown, track numbers, track IDs, and available durations.
 - **Preview Clips:** Resolve and play the public audio preview when nugs provides one for a track.
 - **Webcasts & Livestreams:** Active, upcoming, and exclusive livestream schedule discovery.
+- **Full Web-Player Control:** Play a release, verify its exact first track, inspect status, pause, resume, skip, go back, and stop.
 - **Text or JSON:** Readable console tables for humans and structured `--json` output for automation.
 
 ---
@@ -36,19 +37,19 @@ The client uses undocumented JSON endpoints also used by nugs.net's public catal
 
 ### With pip
 ```bash
-pip install git+https://github.com/BsnizND/nugs-cli.git@v1.0.0
+pip install "nugs-cli[player] @ git+https://github.com/BsnizND/nugs-cli.git@v1.1.0"
 ```
 
 ### With pipx (Recommended for standalone CLI)
 ```bash
-pipx install git+https://github.com/BsnizND/nugs-cli.git@v1.0.0
+pipx install "nugs-cli[player] @ git+https://github.com/BsnizND/nugs-cli.git@v1.1.0"
 ```
 
 ### From Source
 ```bash
 git clone https://github.com/BsnizND/nugs-cli.git
 cd nugs-cli
-pip install -e .
+pip install -e ".[player]"
 ```
 
 ---
@@ -145,6 +146,37 @@ nugs play-clip 48955 1 --seconds 5
 
 Playback uses `afplay` on macOS, or `ffplay`/`mpv` when installed. The command exits unsuccessfully if no supported player is available or playback fails.
 
+### Control Full Subscriber Playback
+
+Full playback stays inside the official Nugs web player. Start Chrome with a dedicated profile and a loopback-only DevTools endpoint, then log into Nugs in that profile once:
+
+```bash
+google-chrome \
+  --user-data-dir="$HOME/.local/share/nugs-cli/chrome-profile" \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --no-first-run \
+  about:blank
+```
+
+The CLI attaches to that existing session. It never asks for, reads, prints, or stores your Nugs password or access tokens.
+
+```bash
+# Start the release or require its exact first rendered track
+nugs play 48955
+nugs play-track --target 48955 --track-title "Jimi Thing"
+
+# Inspect and control the same native player
+nugs status
+nugs pause
+nugs resume --target 48955
+nugs next --target 48955 --from-track-title "Jimi Thing" --to-track-title "Word Up!"
+nugs previous --target 48955 --from-track-title "Word Up!" --to-track-title "Jimi Thing"
+nugs stop
+```
+
+Use `--cdp-endpoint` or `NUGS_CDP_ENDPOINT` when Chrome listens somewhere other than `http://127.0.0.1:9222`. Keep the endpoint loopback-only: Chrome DevTools access is equivalent to access to the logged-in browser profile.
+
 ### Featured & Popular Shows
 ```bash
 nugs featured
@@ -210,7 +242,9 @@ python -m pip wheel --no-deps .
 
 ## Responsible Use
 
-This client is unofficial and relies on undocumented endpoints. Use it only in ways permitted by the [nugs.net Terms of Use](https://www.nugs.net/terms.html) that apply to you and by applicable law. It does not bypass authentication, subscription access, or digital-rights controls, and it intentionally does not resolve full subscriber streams.
+This client is unofficial and relies on undocumented public catalog endpoints plus rendered first-party web-player controls. Use it only in ways permitted by the [nugs.net Terms of Use](https://www.nugs.net/terms.html) that apply to you and by applicable law.
+
+The project intentionally does not contain Nugs client secrets, reproduce Nugs application code, bypass authentication or subscription access, defeat digital-rights controls, expose protected stream URLs, or download subscriber media. Full playback requires the user's own active subscription and logged-in official web session.
 
 ---
 

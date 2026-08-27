@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -14,7 +15,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from . import api
+from . import api, player
 
 MAX_CLIP_BYTES = 25 * 1024 * 1024
 
@@ -275,13 +276,44 @@ def cmd_play_clip(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_player(args: argparse.Namespace) -> int:
+    result = asyncio.run(
+        player.run_command(
+            args.command,
+            endpoint=args.cdp_endpoint,
+            target=getattr(args, "target", None),
+            source_url=getattr(args, "url", None),
+            track_title=getattr(args, "track_title", None),
+            from_track_title=getattr(args, "from_track_title", None),
+            to_track_title=getattr(args, "to_track_title", None),
+        )
+    )
+    if args.json:
+        print(json.dumps(result, indent=2))
+    elif result.get("player_present"):
+        track = f" — {result['track_title']}" if result.get("track_title") else ""
+        print(f"{result['state']}: nugs release {result['release_id']}{track}")
+    else:
+        print(result["state"])
+    return 0
+
+
+def _add_player_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cdp-endpoint",
+        default=player.DEFAULT_CDP_ENDPOINT,
+        help=f"Logged-in Chrome DevTools endpoint (default: {player.DEFAULT_CDP_ENDPOINT})",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = sys.argv[1:] if argv is None else argv
     has_json_flag = "--json" in raw_argv
 
     parser = argparse.ArgumentParser(
         prog="nugs",
-        description="Unofficial nugs.net CLI for catalog, shows, setlists, previews, and livestreams.",
+        description="Unofficial nugs.net CLI for catalog discovery and logged-in web-player control.",
     )
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -343,6 +375,34 @@ def main(argv: list[str] | None = None) -> int:
     p_play.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_play.set_defaults(func=cmd_play_clip)
 
+    # authenticated first-party web player
+    p_release_play = subparsers.add_parser("play", help="Play a release in a logged-in nugs web player")
+    p_release_play.add_argument("target", help="Show ID or URL")
+    _add_player_options(p_release_play)
+    p_release_play.set_defaults(func=cmd_player)
+
+    p_track_play = subparsers.add_parser("play-track", help="Play the exact first track of a release")
+    p_track_play.add_argument("--target", required=True, help="Show ID or URL")
+    p_track_play.add_argument("--track-title", required=True, help="Exact first rendered track title")
+    p_track_play.add_argument("--url", help="Accepted for LifeOS compatibility; playback uses the exact release target")
+    _add_player_options(p_track_play)
+    p_track_play.set_defaults(func=cmd_player)
+
+    for command in ("status", "pause", "resume", "stop"):
+        command_parser = subparsers.add_parser(command, help=f"{command.title()} the logged-in nugs web player")
+        if command == "resume":
+            command_parser.add_argument("--target", help="Optional expected release target")
+        _add_player_options(command_parser)
+        command_parser.set_defaults(func=cmd_player)
+
+    for command in ("next", "previous"):
+        command_parser = subparsers.add_parser(command, help=f"Select the {command} track")
+        command_parser.add_argument("--target", help="Optional expected release target")
+        command_parser.add_argument("--from-track-title", required=True, help="Exact current track title")
+        command_parser.add_argument("--to-track-title", required=True, help="Exact expected track title")
+        _add_player_options(command_parser)
+        command_parser.set_defaults(func=cmd_player)
+
     args = parser.parse_args(argv)
     if has_json_flag:
         args.json = True
@@ -353,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return args.func(args)
-    except (api.NugsAPIError, CLIError, ValueError, OSError, subprocess.SubprocessError) as error:
+    except (api.NugsAPIError, player.PlayerError, CLIError, ValueError, OSError, subprocess.SubprocessError) as error:
         if getattr(args, "json", False):
             print(json.dumps({"error": str(error)}, indent=2))
         else:

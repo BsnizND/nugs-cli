@@ -2,9 +2,9 @@ import io
 import json
 import unittest
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from nugs_cli import api, cli
+from nugs_cli import api, cli, player
 
 
 class TestNugsCLI(unittest.TestCase):
@@ -161,6 +161,67 @@ class TestNugsCLI(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(buf.getvalue()), {"error": "network unavailable"})
+
+    @patch("nugs_cli.player.run_command", new_callable=AsyncMock)
+    def test_player_status_json(self, mock_run_command):
+        mock_run_command.return_value = {
+            "command": "status",
+            "player_present": True,
+            "state": "playing",
+            "release_id": "48955",
+            "track_title": "Jimi Thing",
+        }
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["status", "--json"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(buf.getvalue())["track_title"], "Jimi Thing")
+        mock_run_command.assert_awaited_once()
+
+    @patch("nugs_cli.player.run_command", new_callable=AsyncMock)
+    def test_play_track_passes_exact_identity(self, mock_run_command):
+        mock_run_command.return_value = {
+            "command": "play-track",
+            "player_present": True,
+            "state": "playing",
+            "release_id": "48955",
+            "track_title": "Jimi Thing",
+        }
+        source_url = "https://www.nugs.net/show/48955.html"
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(
+                [
+                    "play-track",
+                    "--target",
+                    "48955",
+                    "--track-title",
+                    "Jimi Thing",
+                    "--url",
+                    source_url,
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        kwargs = mock_run_command.await_args.kwargs
+        self.assertEqual(kwargs["target"], "48955")
+        self.assertEqual(kwargs["track_title"], "Jimi Thing")
+        self.assertEqual(kwargs["source_url"], source_url)
+
+    @patch("nugs_cli.player.run_command", new_callable=AsyncMock)
+    def test_player_error_is_bounded_json(self, mock_run_command):
+        mock_run_command.side_effect = player.PlayerError("not logged in")
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["status", "--json"])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(buf.getvalue()), {"error": "not logged in"})
 
 
 if __name__ == "__main__":
