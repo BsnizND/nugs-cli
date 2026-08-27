@@ -24,6 +24,12 @@ class CLIError(RuntimeError):
     """Expected command-line failure that should not produce a traceback."""
 
 
+def _emit_json(value: Any) -> None:
+    """Emit exactly one compact JSON document for machine consumers."""
+
+    print(json.dumps(value, separators=(",", ":")))
+
+
 def _nonnegative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
@@ -60,7 +66,7 @@ def cmd_artists(args: argparse.Namespace) -> int:
     artists = api.get_artists(query=args.query)
     selected = artists if args.limit == 0 else artists[:args.limit]
     if args.json:
-        print(json.dumps(selected, indent=2))
+        _emit_json(selected)
         return 0
 
     if not artists:
@@ -78,7 +84,7 @@ def cmd_shows(args: argparse.Namespace) -> int:
     data = api.get_shows_by_artist(args.artist, limit=args.limit, offset=args.offset)
 
     if args.json:
-        print(json.dumps(data, indent=2))
+        _emit_json(data)
         return 0
 
     artist = data["artist"]
@@ -97,7 +103,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     data = api.get_show(args.target)
 
     if args.json:
-        print(json.dumps(data, indent=2))
+        _emit_json(data)
         return 0
 
     print(f"{data['artist_name']} — {data['title']}")
@@ -122,7 +128,7 @@ def cmd_show(args: argparse.Namespace) -> int:
 def cmd_featured(args: argparse.Namespace) -> int:
     data = api.get_featured_releases(limit=args.limit, offset=args.offset)
     if args.json:
-        print(json.dumps(data, indent=2))
+        _emit_json(data)
         return 0
 
     rows = []
@@ -140,7 +146,7 @@ def cmd_featured(args: argparse.Namespace) -> int:
 def cmd_popular(args: argparse.Namespace) -> int:
     data = api.get_popular_releases(limit=args.limit, offset=args.offset)
     if args.json:
-        print(json.dumps(data, indent=2))
+        _emit_json(data)
         return 0
 
     rows = []
@@ -158,7 +164,7 @@ def cmd_popular(args: argparse.Namespace) -> int:
 def cmd_livestreams(args: argparse.Namespace) -> int:
     data = api.get_livestreams(limit=args.limit, offset=args.offset)
     if args.json:
-        print(json.dumps(data, indent=2))
+        _emit_json(data)
         return 0
 
     rows = []
@@ -208,7 +214,7 @@ def cmd_clip_url(args: argparse.Namespace) -> int:
         raise CLIError(f"No clip URL available for track {args.track or 1}")
 
     if args.json:
-        print(json.dumps(selected_track, indent=2))
+        _emit_json(selected_track)
     else:
         print(selected_track["clip_url"])
     return 0
@@ -268,7 +274,7 @@ def cmd_play_clip(args: argparse.Namespace) -> int:
         "track": selected_track,
     }
     if args.json:
-        print(json.dumps(result, indent=2))
+        _emit_json(result)
     else:
         print(f"Played preview: {data['artist_name']} — {selected_track['title']} ({data['title']})")
         print(f"Player: {player} | Duration: {args.seconds}s")
@@ -289,7 +295,7 @@ def cmd_player(args: argparse.Namespace) -> int:
         )
     )
     if args.json:
-        print(json.dumps(result, indent=2))
+        _emit_json(result)
     elif result.get("player_present"):
         track = f" — {result['track_title']}" if result.get("track_title") else ""
         print(f"{result['state']}: nugs release {result['release_id']}{track}")
@@ -415,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (api.NugsAPIError, player.PlayerError, CLIError, ValueError, OSError, subprocess.SubprocessError) as error:
         if getattr(args, "json", False):
-            print(json.dumps({"error": str(error)}, indent=2))
+            _emit_json({"error": str(error)})
         else:
             print(f"Error: {error}", file=sys.stderr)
         return 1

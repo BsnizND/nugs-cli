@@ -178,6 +178,7 @@ class TestNugsCLI(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(buf.getvalue())["track_title"], "Jimi Thing")
+        self.assertEqual(len(buf.getvalue().splitlines()), 1)
         mock_run_command.assert_awaited_once()
 
     @patch("nugs_cli.player.run_command", new_callable=AsyncMock)
