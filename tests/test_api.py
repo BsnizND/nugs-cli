@@ -123,6 +123,69 @@ class TestNugsAPI(unittest.TestCase):
         self.assertEqual(show["tracks"][0]["clip_url"], "https://assets.nugs.net/clips2/dmb260725d1_01_Jimi_Thing_c.mp3")
 
     @patch("nugs_cli.api._http_get")
+    def test_search_catalog_returns_exact_song_matches_and_filters(self, mock_get):
+        artists_payload = {
+            "Response": {
+                "artists": [
+                    {
+                        "artistID": 803,
+                        "artistName": "Dave Matthews Band",
+                        "artistNameNoThe": "dave matthews band",
+                        "numShows": 128,
+                    }
+                ]
+            }
+        }
+        catalog_payload = {
+            "Response": {
+                "totalMatchedRecords": 2,
+                "containers": [
+                    {
+                        "containerID": 48951,
+                        "containerInfo": "07/18/26 SPAC",
+                        "artistID": 803,
+                        "artistName": "Dave Matthews Band",
+                        "venueName": "SPAC",
+                        "venueCity": "Saratoga Springs",
+                        "venueState": "NY",
+                        "performanceDateFormatted": "2026/07/18",
+                        "performanceDateYear": "2026",
+                        "songs": [
+                            {"trackID": 1, "songID": 2, "songTitle": "Granny", "trackNum": 1},
+                            {"trackID": 3, "songID": 4, "songTitle": "Two Step", "trackNum": 2},
+                        ],
+                    },
+                    {
+                        "containerID": 1,
+                        "artistID": 803,
+                        "artistName": "Dave Matthews Band",
+                        "venueName": "Elsewhere",
+                        "performanceDateFormatted": "2025/07/18",
+                        "performanceDateYear": "2025",
+                        "songs": [{"trackID": 5, "songID": 4, "songTitle": "Two Step"}],
+                    },
+                ],
+            }
+        }
+        mock_get.side_effect = lambda url, params=None, headers=None: (
+            artists_payload if params and params.get("method") == "catalog.artists" else catalog_payload
+        )
+
+        result = api.search_catalog(
+            "Two Step",
+            artist="Dave Matthews Band",
+            year=2026,
+            venue="Saratoga",
+            date_from="2026-01-01",
+        )
+
+        self.assertEqual([show["show_id"] for show in result["shows"]], [48951])
+        self.assertEqual(result["shows"][0]["matched_tracks"][0]["title"], "Two Step")
+        search_call = mock_get.call_args_list[-1]
+        self.assertEqual(search_call.kwargs["params"]["artistList"], 803)
+        self.assertEqual(search_call.kwargs["params"]["showYears"], 2026)
+
+    @patch("nugs_cli.api._http_get")
     def test_featured_releases_are_normalized_and_limited(self, mock_get):
         mock_get.return_value = {
             "items": [

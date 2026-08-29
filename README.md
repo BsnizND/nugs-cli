@@ -9,11 +9,13 @@ Catalog and preview commands use Python's standard library only. Full playback i
 ## Features
 
 - **Artist Directory:** Search and resolve artist IDs and catalog counts (Dave Matthews Band, Phish, Dead & Company, Goose, Billy Strings, Pearl Jam, Bruce Springsteen, Metallica, etc.).
+- **Unified Search:** Find artists and shows containing a song, then narrow by artist, year, venue, or date range.
 - **Concert & Show Catalogs:** List recent and historical shows by artist with venue, date, city, state, and container ID.
 - **Setlist & Track Inspection:** Show set breakdown, track numbers, track IDs, and available durations.
 - **Preview Clips:** Resolve and play the public audio preview when nugs provides one for a track.
 - **Webcasts & Livestreams:** Active, upcoming, and exclusive livestream schedule discovery.
-- **Full Web-Player Control:** Play a release, verify its exact first track, inspect status, pause, resume, skip, go back, and stop.
+- **Full Web-Player Control:** Play a release or any exact track, inspect status, pause, resume, skip, go back, and stop.
+- **Readiness Doctor:** Check the local browser, logged-in session, and optional rendered release controls without starting playback.
 - **Text or JSON:** Readable console tables for humans and structured `--json` output for automation.
 
 ---
@@ -25,6 +27,7 @@ The client uses undocumented JSON endpoints also used by nugs.net's public catal
 | Endpoint | Method | Purpose |
 | :--- | :--- | :--- |
 | `https://streamapi.nugs.net/api.aspx?method=catalog.artists&availType=1` | `GET` | Complete directory of 640+ artists with IDs, show counts, and avatars |
+| `https://streamapi.nugs.net/api.aspx?method=catalog.containersAll&songsPlayed={query}` | `GET` | Shows containing a matching song, with setlists and catalog identities |
 | `https://catalog.nugs.net/api/v1/releases?artistIds={artistId}&limit=20` | `GET` | Paginated show list for any artist ID |
 | `https://catalog.nugs.net/api/v1/shows/{showId}` | `GET` | Complete show details, venue, date, full setlist, track IDs, clip URLs, SKUs |
 | `https://catalog.nugs.net/api/v1/releases/featured` | `GET` | Currently featured releases |
@@ -37,12 +40,12 @@ The client uses undocumented JSON endpoints also used by nugs.net's public catal
 
 ### With pip
 ```bash
-pip install "nugs-cli[player] @ git+https://github.com/BsnizND/nugs-cli.git@v1.1.0"
+pip install "nugs-cli[player] @ git+https://github.com/BsnizND/nugs-cli.git@v1.2.0"
 ```
 
 ### With pipx (Recommended for standalone CLI)
 ```bash
-pipx install "nugs-cli[player] @ git+https://github.com/BsnizND/nugs-cli.git@v1.1.0"
+pipx install "nugs-cli[player] @ git+https://github.com/BsnizND/nugs-cli.git@v1.2.0"
 ```
 
 ### From Source
@@ -91,6 +94,19 @@ Show ID  Date        Venue                                 Title
 46890    2026-08-21  Hayden Homes Amphitheater (Bend, OR)  8-21-2026 Hayden Homes Amphitheater Bend, OR
 46889    2026-08-19  WaMu Theater (Seattle, WA)            8-19-2026 WaMu Theater Seattle, WA
 ```
+
+### Search Artists and Setlists
+
+```bash
+# Find exact song performances, optionally narrowed to one artist and year
+nugs search "Two Step" --artist "Dave Matthews Band" --year 2026
+
+# Filter that result set by venue and date range
+nugs search "Two Step" --artist 803 --venue "Saratoga" \
+  --date-from 2026-01-01 --date-to 2026-12-31
+```
+
+Nugs exposes song/setlist search rather than unrestricted free-text release search. Venue and date options filter the bounded song, artist, or year result set; the CLI does not crawl the catalog and pretend that filter is a global search.
 
 ### Inspect Show & Setlist
 ```bash
@@ -162,8 +178,15 @@ google-chrome \
 The CLI attaches to that existing session. It never asks for, reads, prints, or stores your Nugs password or access tokens.
 
 ```bash
-# Start the release or require its exact first rendered track
+# Check the browser and logged-in session without starting playback
+nugs doctor
+nugs doctor --target 48955
+
+# Start the release, or start any exact track by number, ID, or title
 nugs play 48955
+nugs play 48955 --track 7
+nugs play 48955 --track 781985
+nugs play 48955 --track "What Would You Say"
 nugs play-track --target 48955 --track-title "Jimi Thing"
 
 # Inspect and control the same native player
@@ -193,6 +216,8 @@ Pass `--json` to any command for structured JSON output:
 ```bash
 nugs show 48955 --json
 nugs shows "Phish" --json
+nugs search "Two Step" --artist 803 --year 2026 --json
+nugs doctor --json
 nugs play-clip 48955 1 --seconds 1 --json
 ```
 
@@ -210,6 +235,9 @@ import nugs_cli
 # Search artists
 artists = nugs_cli.get_artists("Dave Matthews")
 artist_id = artists[0]["id"]  # 803
+
+# Search shows containing a song
+matches = nugs_cli.search_catalog("Two Step", artist=artist_id, year=2026)
 
 # List shows
 shows = nugs_cli.get_shows_by_artist(artist_id, limit=5)

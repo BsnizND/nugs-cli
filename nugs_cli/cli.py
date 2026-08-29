@@ -125,6 +125,48 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_search(args: argparse.Namespace) -> int:
+    data = api.search_catalog(
+        args.query,
+        artist=args.artist,
+        year=args.year,
+        venue=args.venue,
+        date_from=args.date_from,
+        date_to=args.date_to,
+        limit=args.limit,
+        offset=args.offset,
+    )
+    if args.json:
+        _emit_json(data)
+        return 0
+
+    if data["artists"]:
+        print("Artists")
+        print(format_table(
+            ["Artist ID", "Artist Name", "Shows"],
+            [[str(item["id"]), item["name"], str(item.get("num_shows", ""))] for item in data["artists"]],
+        ))
+    if data["shows"]:
+        if data["artists"]:
+            print()
+        print("Shows")
+        rows = []
+        for show in data["shows"]:
+            matches = ", ".join(track.get("title") or "" for track in show.get("matched_tracks", []))
+            venue = ", ".join(filter(None, [show.get("venue_name"), show.get("venue_city"), show.get("venue_state")]))
+            rows.append([
+                str(show.get("show_id", "")),
+                show.get("artist_name") or "",
+                show.get("performance_date") or "",
+                venue,
+                matches,
+            ])
+        print(format_table(["Show ID", "Artist", "Date", "Venue", "Matching tracks"], rows))
+    if not data["artists"] and not data["shows"]:
+        print("No results found.")
+    return 0
+
+
 def cmd_featured(args: argparse.Namespace) -> int:
     data = api.get_featured_releases(limit=args.limit, offset=args.offset)
     if args.json:
@@ -283,13 +325,25 @@ def cmd_play_clip(args: argparse.Namespace) -> int:
 
 
 def cmd_player(args: argparse.Namespace) -> int:
+    track_title = getattr(args, "track_title", None)
+    track_id = None
+    if args.command == "play" and getattr(args, "track", None):
+        show = api.get_show(args.target)
+        selected_track = _resolve_track_from_show(show, args.track)
+        if selected_track is None:
+            raise CLIError(f"No track found matching {args.track!r} in release {show['show_id']}")
+        track_title = selected_track.get("title")
+        track_id = selected_track.get("track_id")
+        if not track_title:
+            raise CLIError(f"Track {args.track!r} has no playable title")
     result = asyncio.run(
         player.run_command(
             args.command,
             endpoint=args.cdp_endpoint,
             target=getattr(args, "target", None),
             source_url=getattr(args, "url", None),
-            track_title=getattr(args, "track_title", None),
+            track_title=track_title,
+            track_id=track_id,
             from_track_title=getattr(args, "from_track_title", None),
             to_track_title=getattr(args, "to_track_title", None),
         )
@@ -302,6 +356,18 @@ def cmd_player(args: argparse.Namespace) -> int:
     else:
         print(result["state"])
     return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    result = asyncio.run(player.diagnose(endpoint=args.cdp_endpoint, target=args.target))
+    if args.json:
+        _emit_json(result)
+    else:
+        print(f"nugs-cli {result['version']} on Python {result['python']}")
+        for check in result["checks"]:
+            mark = "OK" if check["ok"] else "FAIL"
+            print(f"{mark:4}  {check['name']}: {check['detail']}")
+    return 0 if result["ok"] else 1
 
 
 def _add_player_options(parser: argparse.ArgumentParser) -> None:
@@ -345,6 +411,19 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
     p_show.set_defaults(func=cmd_show)
 
+    # search
+    p_search = subparsers.add_parser("search", help="Search artists and shows containing a song")
+    p_search.add_argument("query", nargs="?", help="Artist name or song-title query")
+    p_search.add_argument("--artist", help="Filter to one artist name or ID")
+    p_search.add_argument("--year", type=int, help="Filter by performance year")
+    p_search.add_argument("--venue", help="Filter returned shows by venue or location text")
+    p_search.add_argument("--date-from", help="Filter returned shows from YYYY-MM-DD")
+    p_search.add_argument("--date-to", help="Filter returned shows through YYYY-MM-DD")
+    p_search.add_argument("--limit", type=_positive_int, default=20, help="Maximum shows to return (default: 20)")
+    p_search.add_argument("--offset", type=_nonnegative_int, default=0, help="Result offset (default: 0)")
+    p_search.add_argument("--json", action="store_true", help="Emit machine-readable JSON output")
+    p_search.set_defaults(func=cmd_search)
+
     # featured
     p_featured = subparsers.add_parser("featured", help="Get featured releases")
     p_featured.add_argument("--limit", type=_positive_int, default=20, help="Limit (default: 20)")
@@ -384,15 +463,21 @@ def main(argv: list[str] | None = None) -> int:
     # authenticated first-party web player
     p_release_play = subparsers.add_parser("play", help="Play a release in a logged-in nugs web player")
     p_release_play.add_argument("target", help="Show ID or URL")
+    p_release_play.add_argument("--track", help="Exact track number, ID, or title")
     _add_player_options(p_release_play)
     p_release_play.set_defaults(func=cmd_player)
 
-    p_track_play = subparsers.add_parser("play-track", help="Play the exact first track of a release")
+    p_track_play = subparsers.add_parser("play-track", help="Play an exact track of a release")
     p_track_play.add_argument("--target", required=True, help="Show ID or URL")
-    p_track_play.add_argument("--track-title", required=True, help="Exact first rendered track title")
+    p_track_play.add_argument("--track-title", required=True, help="Exact rendered track title")
     p_track_play.add_argument("--url", help="Accepted for LifeOS compatibility; playback uses the exact release target")
     _add_player_options(p_track_play)
     p_track_play.set_defaults(func=cmd_player)
+
+    p_doctor = subparsers.add_parser("doctor", help="Check logged-in web-player readiness without playback")
+    p_doctor.add_argument("--target", help="Optional release ID or URL for a deeper rendered-control check")
+    _add_player_options(p_doctor)
+    p_doctor.set_defaults(func=cmd_doctor)
 
     for command in ("status", "pause", "resume", "stop"):
         command_parser = subparsers.add_parser(command, help=f"{command.title()} the logged-in nugs web player")

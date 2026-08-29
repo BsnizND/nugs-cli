@@ -37,6 +37,37 @@ class TestPlayerContract(unittest.TestCase):
         with self.assertRaisesRegex(player.PlayerError, "found 0"):
             player.select_transport_cluster([])
 
+    def test_track_selection_uses_exact_catalog_identity(self):
+        rows = [
+            {"index": 0, "data_id": "781979", "lines": ["1", "Jimi Thing"]},
+            {"index": 6, "data_id": "781985", "lines": ["7", "What Would You Say"]},
+        ]
+
+        self.assertEqual(
+            player.select_track_row(rows, title="What Would You Say", track_id=781985),
+            6,
+        )
+        with self.assertRaisesRegex(player.PlayerError, "found 0"):
+            player.select_track_row(rows, title="What Would You Say", track_id=999999)
+
+    def test_player_endpoint_must_be_loopback(self):
+        player.validate_endpoint("http://127.0.0.1:9222")
+        player.validate_endpoint("http://localhost:9222")
+        with self.assertRaisesRegex(player.PlayerError, "loopback"):
+            player.validate_endpoint("http://192.168.1.20:9222")
+
+    def test_signed_in_signal_uses_visible_navigation(self):
+        self.assertTrue(player.signed_in_from_visible_text("Home\nMy Library\nSearch"))
+        self.assertFalse(player.signed_in_from_visible_text("Home\nMy Library\nLog In"))
+
+    def test_rendered_player_state_fills_missing_browser_media_state(self):
+        self.assertEqual(player.reconcile_player_state("unknown", "playing", 1), "playing")
+        self.assertEqual(player.reconcile_player_state("unknown", "unknown", 1), "playing")
+        self.assertEqual(player.reconcile_player_state("unknown", "paused", 0), "paused")
+        self.assertEqual(player.reconcile_player_state("paused", "playing", 1), "unknown")
+        with self.assertRaisesRegex(player.PlayerError, "active track rows"):
+            player.reconcile_player_state("unknown", "playing", 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nugs-cli"
-version = "1.1.0"
+version = "1.2.0"
 description = "Unofficial CLI and Python client for nugs.net catalog discovery and logged-in web-player control."
 readme = "README.md"
 authors = [{ name = "Brian Snyder" }]

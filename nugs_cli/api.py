@@ -12,7 +12,7 @@ from typing import Any
 
 CATALOG_API_BASE = "https://catalog.nugs.net/api/v1"
 STREAM_API_BASE = "https://streamapi.nugs.net/api.aspx"
-USER_AGENT = "nugs-cli/1.0.0 (https://github.com/BsnizND/nugs-cli)"
+USER_AGENT = "nugs-cli/1.2.0 (https://github.com/BsnizND/nugs-cli)"
 
 SHOW_URL_RE = re.compile(r"(?:/release/|/shows/|/live-[^/]+/|/)(\d+)(?:\.html)?(?:$|[?#])")
 
@@ -226,6 +226,156 @@ def get_shows_by_artist(artist_query_or_id: str | int, limit: int = 20, offset: 
         "artist": artist,
         "items": items,
         "total": data.get("total", len(items)),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def _parse_catalog_date(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().replace("/", "-")
+    try:
+        return datetime.strptime(normalized[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _search_track(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "track_id": _as_int(item.get("trackID")),
+        "song_id": _as_int(item.get("songID")),
+        "title": item.get("songTitle"),
+        "set_num": _as_int(item.get("setNum")),
+        "track_num": _as_int(item.get("trackNum")),
+        "disc_num": _as_int(item.get("discNum")),
+        "clip_url": item.get("clipURL"),
+    }
+
+
+def _search_show(item: dict[str, Any], query: str | None) -> dict[str, Any]:
+    query_folded = (query or "").strip().casefold()
+    tracks = [_search_track(track) for track in item.get("songs", [])]
+    matched_tracks = [
+        track for track in tracks
+        if query_folded and query_folded in (track.get("title") or "").casefold()
+    ]
+    image = item.get("img") if isinstance(item.get("img"), dict) else {}
+    image_url = image.get("url")
+    if isinstance(image_url, str) and image_url.startswith("/"):
+        image_url = f"https://catalog.nugs.net{image_url}"
+    page_url = item.get("pageURL")
+    if isinstance(page_url, str) and page_url.startswith("/"):
+        page_url = f"https://www.nugs.net{page_url}"
+    return {
+        "show_id": _as_int(item.get("containerID")),
+        "title": item.get("containerInfo"),
+        "artist_id": _as_int(item.get("artistID")),
+        "artist_name": item.get("artistName"),
+        "venue_name": item.get("venueName"),
+        "venue_city": item.get("venueCity"),
+        "venue_state": item.get("venueState"),
+        "performance_date": item.get("performanceDateFormatted") or item.get("performanceDate"),
+        "performance_year": _as_int(item.get("performanceDateYear")),
+        "page_url": page_url,
+        "image_url": image_url,
+        "matched_tracks": matched_tracks,
+        "track_count": len(tracks),
+    }
+
+
+def search_catalog(
+    query: str | None = None,
+    *,
+    artist: str | int | None = None,
+    year: int | None = None,
+    venue: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Search artists and shows containing a song, with exact catalog filters.
+
+    Nugs' public client exposes song/setlist search rather than unrestricted
+    free-text release search. Venue and date ranges are therefore filters over
+    the bounded song/artist/year result set, not a hidden catalog crawl.
+    """
+    _validate_pagination(limit, offset)
+    if limit == 0:
+        raise ValueError("search limit must be greater than 0")
+    query = (query or "").strip() or None
+    if not any((query, artist is not None, year is not None)):
+        raise ValueError("search requires a query, --artist, or --year")
+    if year is not None and (year < 1900 or year > 2100):
+        raise ValueError("year must be between 1900 and 2100")
+
+    start_date = _parse_catalog_date(date_from) if date_from else None
+    end_date = _parse_catalog_date(date_to) if date_to else None
+    if date_from and start_date is None:
+        raise ValueError("date-from must use YYYY-MM-DD")
+    if date_to and end_date is None:
+        raise ValueError("date-to must use YYYY-MM-DD")
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("date-from must not be after date-to")
+
+    resolved_artist = resolve_artist(artist) if artist is not None else None
+    artist_matches = get_artists(query=query)[:limit] if query else []
+    if resolved_artist and all(item.get("id") != resolved_artist.get("id") for item in artist_matches):
+        artist_matches.insert(0, resolved_artist)
+
+    needs_local_filter = bool(venue or start_date or end_date)
+    fetch_limit = min(200, max(offset + limit, 100 if needs_local_filter else limit))
+    params: dict[str, Any] = {
+        "method": "catalog.containersAll",
+        "songsPlayed": query,
+        "artistList": resolved_artist.get("id") if resolved_artist else None,
+        "showYears": year,
+        "startOffset": 1 if needs_local_filter else offset + 1,
+        "limit": fetch_limit,
+        "availType": 1,
+    }
+    data = _http_get(STREAM_API_BASE, params=params)
+    response = data.get("Response") if isinstance(data, dict) else None
+    if not isinstance(response, dict):
+        raise NugsAPIError("Catalog search returned an invalid response")
+
+    shows = [_search_show(item, query) for item in response.get("containers", [])]
+    venue_folded = (venue or "").strip().casefold()
+    if venue_folded:
+        shows = [
+            show for show in shows
+            if venue_folded in " ".join(
+                str(show.get(key) or "") for key in ("venue_name", "venue_city", "venue_state")
+            ).casefold()
+        ]
+    if start_date or end_date:
+        filtered = []
+        for show in shows:
+            show_date = _parse_catalog_date(show.get("performance_date"))
+            if show_date is None:
+                continue
+            if start_date and show_date < start_date:
+                continue
+            if end_date and show_date > end_date:
+                continue
+            filtered.append(show)
+        shows = filtered
+    if needs_local_filter:
+        shows = shows[offset:offset + limit]
+
+    return {
+        "query": query,
+        "filters": {
+            "artist": resolved_artist,
+            "year": year,
+            "venue": venue,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
+        "artists": artist_matches,
+        "shows": shows,
+        "total_before_local_filters": response.get("totalMatchedRecords", len(shows)),
         "limit": limit,
         "offset": offset,
     }

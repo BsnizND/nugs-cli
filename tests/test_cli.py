@@ -67,6 +67,35 @@ class TestNugsCLI(unittest.TestCase):
         self.assertIn("Jimi Thing", output)
         self.assertIn("781979", output)
 
+    @patch("nugs_cli.api.search_catalog")
+    def test_cli_search_json(self, mock_search):
+        mock_search.return_value = {
+            "query": "Two Step",
+            "filters": {},
+            "artists": [],
+            "shows": [{"show_id": 48951, "matched_tracks": [{"title": "Two Step"}]}],
+            "total_before_local_filters": 1,
+            "limit": 20,
+            "offset": 0,
+        }
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["search", "Two Step", "--artist", "Dave Matthews Band", "--year", "2026", "--json"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(buf.getvalue())["shows"][0]["show_id"], 48951)
+        mock_search.assert_called_once_with(
+            "Two Step",
+            artist="Dave Matthews Band",
+            year=2026,
+            venue=None,
+            date_from=None,
+            date_to=None,
+            limit=20,
+            offset=0,
+        )
+
     @patch("nugs_cli.api.get_show")
     def test_cli_clip_url(self, mock_get_show):
         mock_get_show.return_value = {
@@ -212,6 +241,50 @@ class TestNugsCLI(unittest.TestCase):
         self.assertEqual(kwargs["target"], "48955")
         self.assertEqual(kwargs["track_title"], "Jimi Thing")
         self.assertEqual(kwargs["source_url"], source_url)
+
+    @patch("nugs_cli.player.run_command", new_callable=AsyncMock)
+    @patch("nugs_cli.api.get_show")
+    def test_play_resolves_arbitrary_track_identity(self, mock_get_show, mock_run_command):
+        mock_get_show.return_value = {
+            "show_id": 48955,
+            "tracks": [
+                {"track_id": 781979, "track_num": 1, "title": "Jimi Thing"},
+                {"track_id": 781985, "track_num": 7, "title": "What Would You Say"},
+            ],
+        }
+        mock_run_command.return_value = {
+            "command": "play-track",
+            "player_present": True,
+            "state": "playing",
+            "release_id": "48955",
+            "track_title": "What Would You Say",
+        }
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["play", "48955", "--track", "7", "--json"])
+
+        self.assertEqual(code, 0)
+        kwargs = mock_run_command.await_args.kwargs
+        self.assertEqual(kwargs["track_title"], "What Would You Say")
+        self.assertEqual(kwargs["track_id"], 781985)
+
+    @patch("nugs_cli.player.diagnose", new_callable=AsyncMock)
+    def test_doctor_returns_failed_exit_with_structured_report(self, mock_diagnose):
+        mock_diagnose.return_value = {
+            "ok": False,
+            "version": "1.2.0",
+            "python": "3.12.0",
+            "endpoint": "http://127.0.0.1:9222",
+            "checks": [{"name": "browser", "ok": False, "detail": "not running"}],
+        }
+        buf = io.StringIO()
+
+        with redirect_stdout(buf):
+            code = cli.main(["doctor", "--json"])
+
+        self.assertEqual(code, 1)
+        self.assertFalse(json.loads(buf.getvalue())["ok"])
 
     @patch("nugs_cli.player.run_command", new_callable=AsyncMock)
     def test_player_error_is_bounded_json(self, mock_run_command):
